@@ -173,7 +173,8 @@ language: fr
 | `show_shutdown` | both | `true` | The shutdown button beside the reboot button (UGREEN NAS **Power Action: Shutdown**, Synology DSM **Shutdown**), with its own confirmation popup; on the mini card, in its zoomed view |
 | `wake_mac` | both | Empty | Optional MAC address for Wake-on-LAN (Synology, QNAP, ASUSTOR, or UGREEN fallback); requires the Home Assistant Wake on LAN integration |
 | `wake_broadcast` | both | Empty | Optional broadcast address for Wake-on-LAN (otherwise 255.255.255.255) |
-| `online_entity` | both | Empty | Optional Ping binary sensor to identify NAS power state (`on` means online, `off` means offline); overrides NAS telemetry availability |
+| `wake_entity` | both | Empty | Optional existing Wake-on-LAN button (e.g. FRITZ!Box Tools); normally found automatically via `wake_mac` |
+| `online_entity` | both | Auto | Optional explicit Ping binary sensor; otherwise discovers a Ping sensor by NAS name or host/IP; falls back to NAS telemetry if none is available |
 | `show_volumes` | both | `true` | Volumes and used space |
 | `show_disks` | both | `true` | Disks details |
 | `show_fans` | both | `true` | Fans speed |
@@ -184,33 +185,33 @@ language: fr
 
 ### Start an offline NAS with the reboot button (Wake-on-LAN)
 
-The existing reboot button also wakes a shut-down NAS when a Wake-on-LAN action is available.
-When the NAS is online it works as before (reboot confirmation); when offline it changes to a power icon
-and opens a **Wake up** confirmation. The shutdown button is disabled while offline.
+The existing reboot button offers **Wake up** when the NAS is offline and an available wake method is found. The shutdown button is disabled while offline.
 
-- **UGREEN:** the card discovers the built-in `power_action_wake_up` button automatically (UGREEN NAS integration v2026.05.1+).
-  If that button is unavailable, an explicitly configured `wake_mac` can be used instead.
-- **Synology, QNAP, ASUSTOR:** configure `wake_mac` in the card's visual editor or YAML.
-  The respective NAS model must support Wake-on-LAN, and it must be enabled in the NAS settings.
-- **Home Assistant:** install the [Wake on LAN integration](https://www.home-assistant.io/integrations/wake_on_lan/)
-  to expose the `wake_on_lan.send_magic_packet` action. A wake packet usually needs Home Assistant and the NAS to be on the same LAN.
+Wake methods, in priority order:
+1. **UGREEN**: built-in `power_action_wake_up` button from the UGREEN NAS integration.
+2. **Explicit `wake_entity`**: any existing, available Home Assistant wake-up button (e.g. from FRITZ!Box Tools).
+3. **FRITZ!Box Tools**: with `wake_mac` configured, the card searches for an enabled `fritz` wake-up button whose device-registry MAC matches the NAS MAC. This requires **no additional Wake on LAN integration** if FRITZ!Box Tools is already installed. Important: its network-device Wake on LAN buttons are **disabled by default**. Enable the corresponding button entity in Home Assistant under **Settings → Devices & services → FRITZ!Box Tools → NAS device → Entities**. Network-device tracking must also be enabled in FRITZ!Box Tools.
+4. **Home Assistant Wake on LAN**: when the optional `wake_on_lan.send_magic_packet` action is already available, the card can use it as a fallback with `wake_mac`. The integration is **not installed automatically** and is not needed for a working FRITZ!Box or UGREEN button.
 
-A [Ping binary sensor](https://www.home-assistant.io/integrations/ping/) is **recommended**:
-it avoids mistaking an unavailable NAS integration for a powered-off NAS. Without `online_entity`,
-the card estimates availability from NAS telemetry; when all available telemetry entities report
-`unavailable`, it treats the NAS as offline. An unknown status does not trigger wake-up.
+The NAS itself must support Wake-on-LAN with the feature enabled. The card is frontend-only and cannot send raw UDP packets from a browser.
 
+**Power-state detection**:
+- A configured, existing `online_entity` Ping binary sensor wins.
+- Without one, the card automatically searches for a matching Ping (ICMP) binary sensor by exact NAS name or NAS web-interface host/IP.
+- If no matching usable Ping sensor exists (including when a stale `online_entity` points to a nonexistent entity), it uses NAS telemetry. All monitored entities unavailable means probably offline; this may also indicate an integration outage. If uncertain, do not wake the NAS by guessing.
+- `on` on the Ping sensor means online; `off` means offline. The card never creates an integration or a sensor.
+
+Example using FRITZ!Box Tools and a Synology NAS:
 ```yaml
 type: custom:nas-card
-nas: diskstation
-wake_mac: "00:11:22:33:44:55"
-wake_broadcast: "192.168.1.255"   # optional
-online_entity: binary_sensor.diskstation_ping
+nas: Lindes_NAS
+language: de
+wake_mac: "00:11:32:5E:61:FE"
+# wake_entity: button.lindes_nas_wake_on_lan  # Only if automatic discovery fails
+# online_entity: binary_sensor.lindes_nas      # Optional: matching Ping sensors are auto-found
 ```
 
-The same options work on `custom:nas-mini-card` (wake/reboot buttons appear in its zoomed view).
-With no wake-up action configured or discovered, the card retains the existing restart control.
-If a configured Ping sensor is unknown or unavailable, the card does not guess that the NAS is offline.
+The same options work in the zoomed view of `custom:nas-mini-card`. If the NAS is offline and there is no usable wake action, the restart control remains disabled with a descriptive tooltip.
 
 ## Screenshots
 
