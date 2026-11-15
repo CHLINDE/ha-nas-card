@@ -171,6 +171,9 @@ language: fr
 | `show_network` | both | `true` | Network download / upload |
 | `show_history` | both | `true` | 24 h curves behind the download / upload tiles (on the mini card, the rates then show as tiles above the footer instead of in it) and behind the CPU and RAM gauges and mini card bars (0–100 % scale), from the recorder's 5-minute statistics, fetched in one query (needs sensors with a `state_class`; a sensor without one simply gets no curve). Sections hidden with `show_system` / `show_network` are not fetched. Points sit at their time over the last 24 hours, and the curve breaks where data is missing |
 | `show_shutdown` | both | `true` | The shutdown button beside the reboot button (UGREEN NAS **Power Action: Shutdown**, Synology DSM **Shutdown**), with its own confirmation popup; on the mini card, in its zoomed view |
+| `wake_mac` | both | Empty | Optional MAC address for Wake-on-LAN (Synology, QNAP, ASUSTOR, or UGREEN fallback); requires the Home Assistant Wake on LAN integration |
+| `wake_broadcast` | both | Empty | Optional broadcast address for Wake-on-LAN (otherwise 255.255.255.255) |
+| `online_entity` | both | Empty | Optional Ping binary sensor to identify NAS power state (`on` means online, `off` means offline); overrides NAS telemetry availability |
 | `show_volumes` | both | `true` | Volumes and used space |
 | `show_disks` | both | `true` | Disks details |
 | `show_fans` | both | `true` | Fans speed |
@@ -178,6 +181,36 @@ language: fr
 | `zoom` | mini | `true` | Detail button at the top right: switches to the full card and back (`false` removes it). The full card's options (`show_system`, `show_volumes`, `show_disks`, `show_fans`, thresholds…) apply to the zoomed view and are also set in the mini card's visual editor |
 | `thresholds` | both | See [Thresholds](#thresholds) | Orange (`warning`) and red (`critical`) levels per reading: `cpu`, `ram`, `temperature` (CPU / system), `disk_temperature` and `volume` (volumes, and the mini card storage bar); set only the values to change |
 | `language` | both | Auto | Force language: `en`, `fr`, `de`, `es`, `sr`, `sr-Latn`, `it`, `nl`, `pt`, `pl`, `ro`, `da`, `sv`, `bg`, `ru`, `uk`, `hu`, `sk`, `cs`, `sl`, `lv` or `el` (auto-detects from HA settings) |
+
+### Start an offline NAS with the reboot button (Wake-on-LAN)
+
+The existing reboot button also wakes a shut-down NAS when a Wake-on-LAN action is available.
+When the NAS is online it works as before (reboot confirmation); when offline it changes to a power icon
+and opens a **Wake up** confirmation. The shutdown button is disabled while offline.
+
+- **UGREEN:** the card discovers the built-in `power_action_wake_up` button automatically (UGREEN NAS integration v2026.05.1+).
+  If that button is unavailable, an explicitly configured `wake_mac` can be used instead.
+- **Synology, QNAP, ASUSTOR:** configure `wake_mac` in the card's visual editor or YAML.
+  The respective NAS model must support Wake-on-LAN, and it must be enabled in the NAS settings.
+- **Home Assistant:** install the [Wake on LAN integration](https://www.home-assistant.io/integrations/wake_on_lan/)
+  to expose the `wake_on_lan.send_magic_packet` action. A wake packet usually needs Home Assistant and the NAS to be on the same LAN.
+
+A [Ping binary sensor](https://www.home-assistant.io/integrations/ping/) is **recommended**:
+it avoids mistaking an unavailable NAS integration for a powered-off NAS. Without `online_entity`,
+the card estimates availability from NAS telemetry; when all available telemetry entities report
+`unavailable`, it treats the NAS as offline. An unknown status does not trigger wake-up.
+
+```yaml
+type: custom:nas-card
+nas: diskstation
+wake_mac: "00:11:22:33:44:55"
+wake_broadcast: "192.168.1.255"   # optional
+online_entity: binary_sensor.diskstation_ping
+```
+
+The same options work on `custom:nas-mini-card` (wake/reboot buttons appear in its zoomed view).
+With no wake-up action configured or discovered, the card retains the existing restart control.
+If a configured Ping sensor is unknown or unavailable, the card does not guess that the NAS is offline.
 
 ## Screenshots
 
