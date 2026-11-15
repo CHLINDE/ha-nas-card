@@ -1917,3 +1917,140 @@ test("ASUSTOR pictures: one drawing per family, bay count from the model, FS6706
   // Every model of the editor list is recognised, without the brand too (except the FS prefix).
   for (const m of NAS_MODELS.asustor.filter((x) => !/^FS/.test(x))) assert.match(nasSvg(m), /data-nas="asustor"/, m);
 });
+
+
+// ---------------------------------------------------------------------------
+// Wake-on-LAN: one reboot/wake control shared by all supported NAS brands.
+// ---------------------------------------------------------------------------
+
+test("Wake-on-LAN: offline Synology, QNAP, ASUSTOR and UGREEN use the configured MAC", async () => {
+  for (const brand of ["synology", "qnap", "asustor", "ugreen"]) {
+    const base = brand === "ugreen"
+      ? { states: statesOf(ug("sensor.wol_nas_cpu_usage", 25, "wol_nas"), btn("button.wol_nas_power_action_reboot")), language: "en" }
+      : await registryHass(brand);
+    const ping = "binary_sensor.nas_ping";
+    const states = { ...base.states, [ping]: { entity_id: ping, state: "off", attributes: {} } };
+    const calls = [];
+    const el = new NasCard();
+    el._config = { wake_mac: "00:11:22:33:44:55", wake_broadcast: "192.168.1.255", online_entity: ping };
+    el._hass = { ...base, states, callService: (...args) => calls.push(args) };
+    el._update = () => { el.html = el._render(); };
+    el.shadowRoot.querySelector = () => null;
+    el._update();
+    assert.match(el.html, /data-action="reboot" title="Wake the NAS"/, brand);
+    assert.doesNotMatch(el.html, /data-action="reboot"[^>]*disabled>/, brand);
+    el._confirmReboot();
+    assert.match(el.html, /Send a Wake-on-LAN packet to start the NAS\?/);
+    el._dialog.onOk();
+    await Promise.resolve();
+    assert.deepEqual(calls[0].slice(0, 2), ["wake_on_lan", "send_magic_packet"], brand);
+    assert.deepEqual({ ...calls[0][2] }, { mac: "00:11:22:33:44:55", broadcast_address: "192.168.1.255" }, brand);
+    el._dialog = null;
+    el._hass = { ...el._hass, states: { ...states, [ping]: { ...states[ping], state: "on" } } };
+    el._update();
+    assert.doesNotMatch(el.html, /title="Wake the NAS"/, brand);
+    if (brand === "synology" || brand === "ugreen") {
+      assert.match(el.html, /data-action="reboot" title="Restart the NAS"/, brand);
+    }
+  }
+});
+
+test("UGREEN native Wake Up button is matched to the NAS and preferred to a MAC packet", async () => {
+  const states = statesOf(
+    ug("sensor.a_nas_cpu_usage", 10, "a_nas"),
+    ug("sensor.b_nas_cpu_usage", 20, "b_nas"),
+    btn("button.a_nas_power_action_reboot"),
+    btn("button.b_nas_power_action_reboot"),
+    btn("button.a_nas_power_action_wake_up"),
+    btn("button.b_nas_power_action_wake_up"),
+  );
+  const a = discover({ states }, "a_nas");
+  const b = discover({ states }, "b_nas");
+  assert.equal(a.scalars.wake, "button.a_nas_power_action_wake_up");
+  assert.equal(b.scalars.wake, "button.b_nas_power_action_wake_up");
+  const calls = [];
+  const el = new NasCard();
+  el._config = { nas: "b_nas", online_entity: "binary_sensor.b_ping", wake_mac: "aa:bb:cc:dd:ee:ff" };
+  el._hass = { states: { ...states, "binary_sensor.b_ping": { state: "off" } }, language: "en", callService: (...args) => calls.push(args) };
+  el._update = () => { el.html = el._render(); };
+  el.shadowRoot.querySelector = () => null;
+  el._update();
+  assert.match(el.html, /title="Wake the NAS"/);
+  el._confirmReboot();
+  el._dialog.onOk();
+  await Promise.resolve();
+  assert.deepEqual(calls[0].slice(0, 2), ["button", "press"]);
+  assert.equal(calls[0][2].entity_id, "button.b_nas_power_action_wake_up");
+
+  // The native button may become unavailable during power-down: the MAC fallback still works.
+  const changed = { ...el._hass.states, "button.b_nas_power_action_wake_up": btn("button.b_nas_power_action_wake_up", "unavailable") };
+  el._hass = { ...el._hass, states: changed };
+  el._dialog = null;
+  el._confirmReboot();
+  el._dialog.onOk();
+  await Promise.resolve();
+  assert.deepEqual(calls[1].slice(0, 2), ["wake_on_lan", "send_magic_packet"]);
+  assert.equal(calls[1][2].mac, "aa:bb:cc:dd:ee:ff");
+});
+
+test("Wake-on-LAN: offline without wake configuration disables reboot and shutdown", async () => {
+  const hass = await registryHass("synology");
+  const states = {
+    ...hass.states,
+    "binary_sensor.nas_ping": { entity_id: "binary_sensor.nas_ping", state: "off", attributes: {} },
+  };
+  const el = new NasCard();
+  el._config = { online_entity: "binary_sensor.nas_ping" };
+  el._hass = { ...hass, states };
+  el._update = () => { el.html = el._render(); };
+  el.shadowRoot.querySelector = () => null;
+  el._update();
+  assert.match(el.html, /data-action="reboot"[^>]*disabled>/);
+  assert.match(el.html, /data-action="shutdown"[^>]*disabled>/);
+  el._confirmReboot();
+  assert.equal(el._dialog, null);
+
+  // An unknown ping must never be interpreted as powered off.
+  el._config.wake_mac = "00:11:22:33:44:55";
+  el._hass = { ...el._hass, states: { ...states, "binary_sensor.nas_ping": { state: "unavailable" } } };
+  el._update();
+  assert.doesNotMatch(el.html, /title="Wake the NAS"/);
+  assert.match(el.html, /title="Restart the NAS"/);
+});
+
+test("Wake-on-LAN: telemetry fallback when no Ping sensor is configured", async () => {
+  const hass = await registryHass("synology");
+  const nas = discover(hass, "");
+  const states = { ...hass.states };
+  for (const key of ["cpu_usage", "ram_usage", "sys_temp", "cpu_temp", "runtime", "boot", "lan_up", "lan_down", "server_status"]) {
+    const id = nas.scalars[key];
+    if (id && states[id]) states[id] = { ...states[id], state: "unavailable" };
+  }
+  const el = new NasCard();
+  el._config = { wake_mac: "00:11:22:33:44:55" };
+  el._hass = { ...hass, states };
+  assert.equal(el._powerState(discover(el._hass, "")), "offline");
+  assert.match(el._render(), /title="Wake the NAS"/);
+  const cpu = nas.scalars.cpu_usage;
+  el._hass = { ...el._hass, states: { ...states, [cpu]: hass.states[cpu] } };
+  assert.equal(el._powerState(discover(el._hass, "")), "online");
+  assert.match(el._render(), /title="Restart the NAS"/);
+});
+
+test("Wake-on-LAN: reject invalid MAC, and an optional Ping entity drives render updates", async () => {
+  const hass = await registryHass("synology");
+  const el = new NasCard();
+  el._config = { wake_mac: "invalid", online_entity: "binary_sensor.power_ping" };
+  el._hass = { ...hass, states: { ...hass.states, "binary_sensor.power_ping": { state: "off" } } };
+  assert.equal(el._wakeMac(), null);
+  assert.doesNotMatch(el._render(), /title="Wake the NAS"/);
+  el._config.wake_mac = "AA-BB-CC-DD-EE-FF";
+  assert.equal(el._wakeMac(), "AA-BB-CC-DD-EE-FF");
+  assert.match(el._render(), /title="Wake the NAS"/);
+  const sigOff = el._signature();
+  const states = { ...el._hass.states, "binary_sensor.power_ping": { state: "on" } };
+  el._hass = { ...el._hass, states };
+  const sigOn = el._signature();
+  assert.notEqual(sigOff.at(-2), sigOn.at(-2)); // NAS power-state entity is tracked in the signature.
+  assert.match(el._render(), /title="Restart the NAS"/);
+});
