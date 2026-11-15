@@ -2051,6 +2051,7 @@ test("Wake-on-LAN: reject invalid MAC, and an optional Ping entity drives render
   const states = { ...el._hass.states, "binary_sensor.power_ping": { state: "on" } };
   el._hass = { ...el._hass, states };
   const sigOn = el._signature();
-  assert.notEqual(sigOff.at(-2), sigOn.at(-2)); // NAS power-state entity is tracked in the signature.
+  assert.ok(sigOff.includes(el._hass.states["binary_sensor.power_ping"]) === false);
+  assert.ok(sigOn.includes(states["binary_sensor.power_ping"])); // Power-state entity is tracked for updates.
   assert.match(el._render(), /title="Restart the NAS"/);
 });
