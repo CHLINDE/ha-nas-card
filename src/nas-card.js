@@ -3055,7 +3055,7 @@ class NasBase extends HTMLElement {
   // A built-in UGREEN wake button, or a pre-existing Home Assistant button (FRITZ!Box Tools, etc.).
   // A FRITZ!Box WOL button is attached to a device whose registry connections include the target MAC.
   _wakeButton(nas) {
-    const usable = (id) => id?.startsWith("button.") && this._s(id) && this._s(id).state !== "unavailable" && this._s(id).state !== "unknown";
+    const usable = (id) => id?.startsWith("button.") && this._s(id) && this._s(id).state !== "unavailable";
     if (usable(nas.scalars.wake)) return nas.scalars.wake;
     if (usable(this._config.wake_entity)) return this._config.wake_entity;
     const mac = this._wakeMac()?.replace(/[^a-f\d]/gi, "").toLowerCase();
