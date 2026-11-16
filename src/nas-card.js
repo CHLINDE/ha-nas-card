@@ -94,13 +94,16 @@ const STRINGS = {
     show_fans: "Show fans",
     show_history: "Show 24 h history",
     show_shutdown: "Shutdown button",
+    show_wake: "Enable Wake-on-LAN",
+    show_wake_helper: "Optional: adds a wake-up action to the restart button while the NAS is offline.",
+    wake_target_auto: "Automatic (by NAS or MAC address)",
     wake_mac: "Wake-on-LAN MAC address (optional)",
-    wake_mac_helper: "Enter the NAS network interface's MAC address. Requires the Home Assistant Wake on LAN integration.",
+    wake_mac_helper: "Optional for automatic matching or a send_magic_packet action; not needed when a target entity is selected.",
     wake_broadcast: "Wake-on-LAN broadcast address (optional)",
     wake_broadcast_helper: "Leave blank for the default broadcast address (255.255.255.255).",
-    wake_entity: "Existing Wake-on-LAN button (optional)",
-    wake_entity_helper: "Optional FRITZ!Box Tools or NAS wake-up button. The card also searches FRITZ!Box wake-up buttons automatically by MAC.",
-    wake_missing: "Wake-on-LAN unavailable: enable the FRITZ!Box wake-up button or configure a supported Wake-on-LAN action.",
+    wake_entity: "Wake-on-LAN target (button or switch)",
+    wake_entity_helper: "Select an existing Wake on LAN / FRITZ!Box / NAS entity, or leave on Automatic. Switch targets are switched on only.",
+    wake_missing: "Wake-on-LAN unavailable: select an available target in card settings or enable a compatible Wake-on-LAN action.",
     online_entity: "NAS online status (optional)",
     online_entity_helper: "Optional override; a matching Ping sensor is otherwise found automatically, followed by NAS telemetry.",
     show_storage: "Show storage",
@@ -254,13 +257,16 @@ const STRINGS = {
     show_fans: "Lüfter anzeigen",
     show_history: "24-h-Verlauf anzeigen",
     show_shutdown: "Schaltfläche Herunterfahren",
+    show_wake: "Wake-on-LAN aktivieren",
+    show_wake_helper: "Optional: Beim ausgeschalteten NAS bietet der Neustart-Button eine Einschaltfunktion.",
+    wake_target_auto: "Automatisch (über NAS oder MAC-Adresse)",
     wake_mac: "Wake-on-LAN-MAC-Adresse (optional)",
-    wake_mac_helper: "MAC-Adresse der NAS-Netzwerkschnittstelle. Die Wake-on-LAN-Integration in Home Assistant ist erforderlich.",
+    wake_mac_helper: "Optional für die automatische Zuordnung oder einen vorhandenen send_magic_packet-Dienst. Bei ausgewählter Ziel-Entität nicht nötig.",
     wake_broadcast: "Wake-on-LAN-Broadcast-Adresse (optional)",
     wake_broadcast_helper: "Leer lassen für die Standardadresse (255.255.255.255).",
-    wake_entity: "Vorhandener Wake-on-LAN-Button (optional)",
-    wake_entity_helper: "Optionaler Einschalt-Button von FRITZ!Box Tools oder dem NAS. Die Karte sucht passende FRITZ!Box-Buttons auch anhand der MAC.",
-    wake_missing: "Wake-on-LAN nicht verfügbar: FRITZ!Box-Einschaltbutton aktivieren oder eine unterstützte Wake-on-LAN-Aktion einrichten.",
+    wake_entity: "Wake-on-LAN-Ziel (Button oder Schalter)",
+    wake_entity_helper: "Vorhandene WOL-, FRITZ!Box- oder NAS-Entität auswählen oder auf Automatisch lassen. Schalter werden nur eingeschaltet.",
+    wake_missing: "Wake-on-LAN nicht verfügbar: in den Karteneinstellungen ein gültiges Ziel auswählen oder eine Einschaltaktion aktivieren.",
     online_entity: "NAS-Onlinestatus (optional)",
     online_entity_helper: "Optionale Vorgabe: Passenden Ping-Sensor sonst automatisch erkennen und bei Fehlen NAS-Entitäten auswerten.",
     show_storage: "Speicher anzeigen",
@@ -3052,27 +3058,52 @@ class NasBase extends HTMLElement {
     return /^(?:[\da-f]{2}:){5}[\da-f]{2}$/i.test(mac) || /^(?:[\da-f]{2}-){5}[\da-f]{2}$/i.test(mac) ? mac : null;
   }
 
-  // A built-in UGREEN wake button, or a pre-existing Home Assistant button (FRITZ!Box Tools, etc.).
-  // A FRITZ!Box WOL button is attached to a device whose registry connections include the target MAC.
-  _wakeButton(nas) {
-    const usable = (id) => id?.startsWith("button.") && this._s(id) && this._s(id).state !== "unavailable";
-    if (usable(nas.scalars.wake)) return nas.scalars.wake;
-    if (usable(this._config.wake_entity)) return this._config.wake_entity;
+  // Wake-up is opt-in. Existing test configurations with an explicit MAC or entity stay compatible.
+  // Setting show_wake: false always overrides those legacy values.
+  _wakeEnabled() {
+    const cfg = this._config || {};
+    return cfg.show_wake === true || (cfg.show_wake !== false && Boolean(cfg.wake_entity || cfg.wake_mac));
+  }
+
+  _usableWakeEntity(id) {
+    return /^(button|switch)\.[a-z0-9_]+$/.test(id || "") && this._s(id) && this._s(id).state !== "unavailable";
+  }
+
+  // Match a registered Wake-on-LAN target to this NAS by its MAC address, not by a guessed label.
+  _macWakeEntity(domain) {
     const mac = this._wakeMac()?.replace(/[^a-f\d]/gi, "").toLowerCase();
     if (!mac) return null;
-    for (const [id, entry] of Object.entries(this._hass?.entities || {})) {
-      if (!usable(id) || entry?.platform !== "fritz" || !/(?:^|_)wake_on_lan$/.test(entry.translation_key || id.split(".")[1])) continue;
+    const entries = this._hass?.entities || {};
+    for (const [id, entry] of Object.entries(entries)) {
+      if (!id.startsWith(`${domain}.`) || !this._usableWakeEntity(id)) continue;
+      const isWake =
+        entry?.platform === "wake_on_lan" ||
+        (domain === "button" && entry?.platform === "fritz" && /(?:^|_)wake_on_lan$/.test(entry.translation_key || id.slice(7)));
+      if (!isWake) continue;
       const device = this._hass?.devices?.[entry.device_id];
-      if (device?.connections?.some(([kind, address]) => kind === "mac" && String(address).replace(/[^a-f\d]/gi, "").toLowerCase() === mac)) return id;
+      const connections = device?.connections || [];
+      if ([...connections].some(([kind, address]) => kind === "mac" && String(address).replace(/[^a-f\d]/gi, "").toLowerCase() === mac)) return id;
     }
     return null;
   }
 
-  // A MAC address alone cannot wake the NAS from JavaScript: browsers cannot send UDP magic packets.
-  // Only offer the Home Assistant action if the corresponding integration is already loaded.
+  // Explicit button first, then the NAS's native UGREEN action, then a matching WOL / FRITZ!Box button.
+  _wakeButton(nas) {
+    const selected = this._config.wake_entity;
+    if (selected?.startsWith("button.") && this._usableWakeEntity(selected)) return selected;
+    if (this._usableWakeEntity(nas.scalars.wake)) return nas.scalars.wake;
+    return this._macWakeEntity("button");
+  }
+
+  // An explicit switch takes priority over auto-discovered buttons.
   _wakeTarget(nas) {
+    if (!this._wakeEnabled()) return null;
+    const selected = this._config.wake_entity;
+    if (selected?.startsWith("switch.") && this._usableWakeEntity(selected)) return { switch: selected };
     const button = this._wakeButton(nas);
     if (button) return { button };
+    const wolSwitch = this._macWakeEntity("switch");
+    if (wolSwitch) return { switch: wolSwitch };
     const mac = this._wakeMac();
     if (mac && this._hass?.services?.wake_on_lan?.send_magic_packet) return { mac };
     return null;
@@ -3141,6 +3172,12 @@ class NasBase extends HTMLElement {
     const target = this._wakeTarget(nas);
     if (!target) return;
     if (target.button) return this._press(target.button);
+    if (target.switch) {
+      Promise.resolve()
+        .then(() => this._hass?.callService("switch", "turn_on", { entity_id: target.switch }))
+        .catch((err) => console.error("nas-card: switch.turn_on failed", err));
+      return;
+    }
     const data = { mac: target.mac };
     if (this._config.wake_broadcast?.trim()) data.broadcast_address = this._config.wake_broadcast.trim();
     Promise.resolve()
@@ -3335,8 +3372,9 @@ class NasBase extends HTMLElement {
     walk(nas.scalars);
     const ping = this._pingEntity(nas);
     if (ping) sig.push(h.states[ping]);
-    const wol = this._wakeButton(nas);
-    if (wol) sig.push(h.states[wol]);
+    const wol = this._wakeTarget(nas);
+    const targetId = wol?.button || wol?.switch || this._config.wake_entity;
+    if (targetId) sig.push(h.states[targetId]);
     sig.push(h.services?.wake_on_lan?.send_magic_packet);
     walk(nas.fans);
     walk(nas.pools);
@@ -4017,6 +4055,26 @@ class NasEditorBase extends HTMLElement {
     return ["show_title", "show_subtitle", "show_image", ...this.constructor.toggles];
   }
 
+  _wakeTargetOptions() {
+    const options = [{ value: "", label: t(this._hass, this._config, "wake_target_auto") }];
+    const states = this._hass?.states || {};
+    for (const [id, entity] of Object.entries(this._hass?.entities || {})) {
+      if (!this._usableEditorWakeTarget(id, entity, states)) continue;
+      options.push({ value: id, label: states[id]?.attributes?.friendly_name || id });
+    }
+    return [options[0], ...options.slice(1).sort((a, b) => a.label.localeCompare(b.label))];
+  }
+
+  _usableEditorWakeTarget(id, entity, states) {
+    if (!/^(button|switch)\./.test(id) || !states[id] || states[id].state === "unavailable") return false;
+    if (entity?.platform === "wake_on_lan") return true;
+    if (id.startsWith("button.") && entity?.platform === "fritz")
+      return /(?:^|_)wake_on_lan$/.test(entity.translation_key || id.slice(7));
+    if (id.startsWith("button.") && entity?.platform === "ugreen")
+      return /(?:^|_)power_action_wake_up(?:_\d+)?$/.test(id.slice(7));
+    return false;
+  }
+
   _schema() {
     const nasOptions = this._hass ? listNas(this._hass) : [];
     const tr = (k) => t(this._hass, this._config, k);
@@ -4041,9 +4099,12 @@ class NasEditorBase extends HTMLElement {
       },
       { name: "url", selector: { text: { type: "url" } } },
       { name: "brand_url", selector: { text: { type: "url" } } },
-      { name: "wake_mac", selector: { text: {} } },
-      { name: "wake_broadcast", selector: { text: {} } },
-      { name: "wake_entity", selector: { entity: { filter: { domain: "button" } } } },
+      { name: "show_wake", selector: { boolean: {} } },
+      ...(this._wakeEnabled() ? [
+        { name: "wake_entity", selector: { select: { mode: "dropdown", custom_value: true, options: this._wakeTargetOptions() } } },
+        { name: "wake_mac", selector: { text: {} } },
+        { name: "wake_broadcast", selector: { text: {} } },
+      ] : []),
       { name: "online_entity", selector: { entity: { filter: { domain: "binary_sensor" } } } },
       {
         type: "grid",
@@ -4140,6 +4201,7 @@ class NasEditorBase extends HTMLElement {
       this.appendChild(this._form);
     }
     const data = { ...this._config };
+    if (data.show_wake === undefined) data.show_wake = Boolean(data.wake_mac || data.wake_entity);
     for (const name of this._toggles()) if (data[name] === undefined) data[name] = true;
     data.thresholds = Object.fromEntries(
       Object.keys(THRESHOLDS).map((m) => {
