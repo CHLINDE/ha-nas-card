@@ -2175,3 +2175,149 @@ test("Wake-on-LAN: disabled FRITZ wake button cannot be used, manual override ca
   el._hass.states["button.custom_wake"] = { entity_id: "button.custom_wake", state: "unknown" };
   assert.equal(el._wakeButton(nas), "button.custom_wake");
 });
+
+
+test("optional Wake-on-LAN: disabled by default and explicit off overrides old MAC configuration", async () => {
+  const base = await registryHass("synology");
+  const button = "button.homeassistant_wake_nas";
+  const el = new NasCard();
+  el._hass = {
+    ...base,
+    states: {
+      ...base.states,
+      [button]: { entity_id: button, state: "unknown", attributes: {} },
+      "binary_sensor.nas_ping": { entity_id: "binary_sensor.nas_ping", state: "off", attributes: {} },
+    },
+  };
+  const nas = discover(el._hass, "");
+  el._config = { online_entity: "binary_sensor.nas_ping" };
+  assert.equal(el._wakeTarget(nas), null);
+  assert.match(el._rebootBtn(nas), / disabled>/);
+
+  el._config = { online_entity: "binary_sensor.nas_ping", show_wake: false, wake_entity: button, wake_mac: "00:11:32:5E:61:FE" };
+  assert.equal(el._wakeTarget(nas), null);
+  assert.match(el._rebootBtn(nas), / disabled>/);
+
+  // Preserve a previously saved configuration with an explicit target.
+  el._config = { online_entity: "binary_sensor.nas_ping", wake_entity: button };
+  assert.equal(el._wakeTarget(nas).button, button);
+});
+
+test("visual editor: enabling Wake-on-LAN reveals its installed WOL, FRITZ and NAS targets", async () => {
+  const base = await registryHass("synology");
+  const targets = {
+    "button.wake_on_lan_nas": { platform: "wake_on_lan" },
+    "switch.legacy_wol": { platform: "wake_on_lan" },
+    "button.fritz_wake_on_lan": { platform: "fritz", translation_key: "wake_on_lan" },
+    "button.ugreen_power_action_wake_up": { platform: "ugreen" },
+    "button.reboot_server": { platform: "synology_dsm" },
+  };
+  const ed = new NasCardEditor();
+  ed._hass = {
+    ...base,
+    entities: { ...base.entities, ...targets },
+    states: Object.fromEntries(Object.keys(targets).map((id) => [id, { entity_id: id, state: "unknown", attributes: {} }])),
+  };
+  ed._config = {};
+  const hidden = ed._schema();
+  assert.ok(hidden.some((field) => field.name === "show_wake"));
+  assert.equal(hidden.find((field) => field.name === "wake_entity"), undefined);
+  assert.equal(hidden.find((field) => field.name === "wake_mac"), undefined);
+
+  ed._config = { show_wake: true };
+  const enabled = ed._schema();
+  const options = enabled.find((field) => field.name === "wake_entity").selector.select.options.map((o) => o.value);
+  for (const id of ["button.wake_on_lan_nas", "switch.legacy_wol", "button.fritz_wake_on_lan", "button.ugreen_power_action_wake_up"])
+    assert.ok(options.includes(id), id);
+  assert.ok(options.includes("")); // Automatic target selection.
+  assert.ok(!options.includes("button.reboot_server")); // Never offer a restart button as a wake target.
+  assert.ok(enabled.some((field) => field.name === "wake_mac"));
+
+  ed._config = { wake_mac: "00:11:32:5E:61:FE" };
+  assert.ok(ed._schema().some((field) => field.name === "wake_entity")); // Legacy config stays editable.
+  ed._config = { show_wake: false, wake_mac: "00:11:32:5E:61:FE" };
+  assert.equal(ed._schema().find((field) => field.name === "wake_entity"), undefined);
+});
+
+test("Wake-on-LAN target selection: a configured button is pressed without a MAC or WOL service", async () => {
+  const base = await registryHass("synology");
+  const target = "button.my_wol_target";
+  const calls = [];
+  const el = new NasCard();
+  el._config = { show_wake: true, wake_entity: target, online_entity: "binary_sensor.nas_ping" };
+  el._hass = {
+    ...base,
+    states: {
+      ...base.states,
+      [target]: { entity_id: target, state: "unknown", attributes: {} },
+      "binary_sensor.nas_ping": { entity_id: "binary_sensor.nas_ping", state: "off", attributes: {} },
+    },
+    entities: { ...base.entities, [target]: { platform: "wake_on_lan" } },
+    services: {},
+    callService: (...args) => calls.push(args),
+  };
+  const nas = discover(el._hass, "");
+  assert.equal(el._wakeTarget(nas).button, target);
+  assert.match(el._rebootBtn(nas), /title="Wake the NAS"/);
+  el._update = () => {};
+  el._confirmReboot();
+  assert.ok(el._dialog);
+  el._dialog.onOk();
+  await Promise.resolve();
+  assert.deepEqual(calls[0].slice(0, 2), ["button", "press"]);
+  assert.deepEqual({ ...calls[0][2] }, { entity_id: target });
+});
+
+test("Wake-on-LAN target selection: a legacy WOL switch is only turned on", async () => {
+  const base = await registryHass("synology");
+  const target = "switch.my_wol_nas";
+  const calls = [];
+  const el = new NasCard();
+  el._config = { show_wake: true, wake_entity: target, online_entity: "binary_sensor.nas_ping" };
+  el._hass = {
+    ...base,
+    states: {
+      ...base.states,
+      [target]: { entity_id: target, state: "on", attributes: {} },
+      "binary_sensor.nas_ping": { entity_id: "binary_sensor.nas_ping", state: "off", attributes: {} },
+    },
+    entities: { ...base.entities, [target]: { platform: "wake_on_lan" } },
+    callService: (...args) => calls.push(args),
+  };
+  const nas = discover(el._hass, "");
+  assert.equal(el._wakeTarget(nas).switch, target);
+  el._wake(nas);
+  await Promise.resolve();
+  assert.deepEqual(calls[0].slice(0, 2), ["switch", "turn_on"]);
+  assert.deepEqual({ ...calls[0][2] }, { entity_id: target });
+  assert.equal(calls.some(([domain, action]) => domain === "switch" && action === "turn_off"), false);
+});
+
+test("Wake-on-LAN: matching a Home Assistant WOL button by MAC without a manually selected target", async () => {
+  const base = await registryHass("synology");
+  const matching = "button.the_nas_wol";
+  const unrelated = "button.some_other_nas_wol";
+  const el = new NasCard();
+  el._config = { show_wake: true, wake_mac: "00:11:32:5E:61:FE", online_entity: "binary_sensor.nas_ping" };
+  el._hass = {
+    ...base,
+    entities: {
+      ...base.entities,
+      [unrelated]: { platform: "wake_on_lan", device_id: "other_wol" },
+      [matching]: { platform: "wake_on_lan", device_id: "nas_wol" },
+    },
+    devices: {
+      ...base.devices,
+      nas_wol: { connections: [["mac", "00:11:32:5e:61:fe"]] },
+      other_wol: { connections: [["mac", "00:11:32:5e:61:ff"]] },
+    },
+    states: {
+      ...base.states,
+      [matching]: { entity_id: matching, state: "unknown", attributes: {} },
+      [unrelated]: { entity_id: unrelated, state: "unknown", attributes: {} },
+      "binary_sensor.nas_ping": { entity_id: "binary_sensor.nas_ping", state: "off", attributes: {} },
+    },
+  };
+  const nas = discover(el._hass, "");
+  assert.equal(el._wakeTarget(nas).button, matching);
+});
