@@ -2969,6 +2969,10 @@ const watchOutside = (card, handler) => {
   };
 };
 
+// show_wake: false always overrides legacy MAC/target settings.
+const wakeEnabled = (config) =>
+  config?.show_wake === true || (config?.show_wake !== false && Boolean(config?.wake_entity || config?.wake_mac));
+
 class NasBase extends HTMLElement {
   constructor() {
     super();
@@ -3058,11 +3062,9 @@ class NasBase extends HTMLElement {
     return /^(?:[\da-f]{2}:){5}[\da-f]{2}$/i.test(mac) || /^(?:[\da-f]{2}-){5}[\da-f]{2}$/i.test(mac) ? mac : null;
   }
 
-  // Wake-up is opt-in. Existing test configurations with an explicit MAC or entity stay compatible.
-  // Setting show_wake: false always overrides those legacy values.
+  // Wake-up is opt-in. Existing configurations with a MAC or target remain compatible.
   _wakeEnabled() {
-    const cfg = this._config || {};
-    return cfg.show_wake === true || (cfg.show_wake !== false && Boolean(cfg.wake_entity || cfg.wake_mac));
+    return wakeEnabled(this._config);
   }
 
   _usableWakeEntity(id) {
@@ -4100,7 +4102,7 @@ class NasEditorBase extends HTMLElement {
       { name: "url", selector: { text: { type: "url" } } },
       { name: "brand_url", selector: { text: { type: "url" } } },
       { name: "show_wake", selector: { boolean: {} } },
-      ...(this._wakeEnabled() ? [
+      ...(wakeEnabled(this._config) ? [
         { name: "wake_entity", selector: { select: { mode: "dropdown", custom_value: true, options: this._wakeTargetOptions() } } },
         { name: "wake_mac", selector: { text: {} } },
         { name: "wake_broadcast", selector: { text: {} } },
